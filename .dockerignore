@@ -1,0 +1,13 @@
+# Keep the build context small and avoid leaking local files into the image.
+.git
+.github
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+k8s
+argocd
+scripts
+*.md
+Dockerfile
+.dockerignore

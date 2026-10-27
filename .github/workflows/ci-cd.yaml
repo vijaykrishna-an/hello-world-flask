@@ -1,0 +1,161 @@
+name: CI / CD — Build, Push, Deploy
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PIPELINE OVERVIEW
+#
+#  git push → main
+#      │
+#      ├── job: test          (every push + PR)
+#      │     └── docker build --target test   ← pytest runs inside Docker
+#      │
+#      ├── job: build-and-push  (main only, after test passes)
+#      │     ├── docker build --target runtime --build-arg APP_VERSION=<sha>
+#      │     ├── docker login  → Docker Hub (anvk1729)
+#      │     └── docker push  → anvk1729/hello-world-flask:<sha>
+#      │
+#      └── job: update-k8s-tag  (after push succeeds)
+#            ├── sed newTag: <sha>  in k8s/kustomization.yaml
+#            └── git commit + push  ← ArgoCD detects this change
+#
+# ─────────────────────────────────────────────────────────────────────────────
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      # The update-k8s-tag job commits to k8s/. Without this guard the commit
+      # would re-trigger the workflow → infinite loop.
+      # (Pushes made with GITHUB_TOKEN also don't re-trigger, so this is a
+      #  double safety net.)
+      - "k8s/**"
+  pull_request:
+    branches: [main]
+
+env:
+  DOCKERHUB_USERNAME: anvk1729
+  IMAGE_NAME: anvk1729/hello-world-flask
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 1 — test
+  # Runs on every push and every PR.
+  # Builds only the "test" stage of the Dockerfile which ends with `RUN pytest`.
+  # If any test fails, docker build exits non-zero → job fails → pipeline stops.
+  # ─────────────────────────────────────────────────────────────────────────
+  test:
+    name: Test 🧪
+    runs-on: [self-hosted, mac, arm64]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Run tests inside Docker
+        run: |
+          docker build --target test \
+            --label "sha=${{ github.sha }}" \
+            -t ${{ env.IMAGE_NAME }}:test \
+            .
+          echo "### Tests passed ✅" >> $GITHUB_STEP_SUMMARY
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 2 — build-and-push
+  # Runs only on pushes to main (never on PRs).
+  # Depends on test → only runs if tests passed.
+  # ─────────────────────────────────────────────────────────────────────────
+  build-and-push:
+    name: Build & Push 🐳
+    runs-on: [self-hosted, mac, arm64]
+    needs: [test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    outputs:
+      # Pass the tag to the next job so it knows what to write in kustomization.yaml
+      image-tag: ${{ steps.tag.outputs.image-tag }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Use first 7 chars of the git commit SHA as the image tag.
+      # This is immutable, unique, and links the running image directly to a commit.
+      - name: Set image tag
+        id: tag
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          echo "image-tag=${SHORT_SHA}" >> $GITHUB_OUTPUT
+          echo "Image tag will be: ${SHORT_SHA}"
+
+      # Build the slim production image. pytest is NOT re-run here (it ran in job 1).
+      # APP_VERSION is baked into the image and returned by the "/" endpoint,
+      # so you can verify exactly which commit is running after ArgoCD deploys it.
+      - name: Build runtime image
+        run: |
+          docker build \
+            --target runtime \
+            --build-arg APP_VERSION=${{ steps.tag.outputs.image-tag }} \
+            -t ${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.image-tag }} \
+            -t ${{ env.IMAGE_NAME }}:latest \
+            .
+
+      # Authenticate to Docker Hub.
+      # Secrets required (add in: repo → Settings → Secrets → Actions):
+      #   DOCKERHUB_TOKEN — access token generated at hub.docker.com
+      #                     (Account Settings → Personal Access Tokens → Read & Write)
+      - name: Login to Docker Hub
+        run: |
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | \
+            docker login -u ${{ env.DOCKERHUB_USERNAME }} --password-stdin
+
+      # Push both the SHA tag and "latest".
+      # ArgoCD pins to the SHA tag; "latest" is a convenience alias.
+      - name: Push image to Docker Hub
+        run: |
+          docker push ${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.image-tag }}
+          docker push ${{ env.IMAGE_NAME }}:latest
+          echo "### Image pushed ✅" >> $GITHUB_STEP_SUMMARY
+          echo "\`${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.image-tag }}\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Logout from Docker Hub
+        if: always()
+        run: docker logout
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 3 — update-k8s-tag
+  # The GitOps hand-off point: CI edits ONE line in k8s/kustomization.yaml
+  # (the image tag) and commits it to the repo.
+  # ArgoCD polls the repo every ~3 min, detects the new tag, and runs
+  # kubectl apply -k k8s/ against the cluster — completing the deployment.
+  # ─────────────────────────────────────────────────────────────────────────
+  update-k8s-tag:
+    name: Update Image Tag in Git 📝
+    runs-on: [self-hosted, mac, arm64]
+    needs: [build-and-push]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update image tag in kustomization.yaml
+        run: |
+          IMAGE_TAG="${{ needs.build-and-push.outputs.image-tag }}"
+
+          # Update the newName and newTag lines inside the images block.
+          sed -i '' "s|newName:.*|newName: ${{ env.IMAGE_NAME }}|" k8s/kustomization.yaml
+          sed -i '' "s|newTag:.*|newTag: ${IMAGE_TAG}|"             k8s/kustomization.yaml
+
+          echo "Updated kustomization.yaml:"
+          grep -A4 "^images:" k8s/kustomization.yaml
+
+      - name: Commit and push
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add k8s/kustomization.yaml
+          git commit -m "ci: update image tag to ${{ needs.build-and-push.outputs.image-tag }}
+
+          Image: ${{ env.IMAGE_NAME }}:${{ needs.build-and-push.outputs.image-tag }}
+          Triggered by: ${{ github.actor }}
+          Commit: ${{ github.sha }}"
+          git push

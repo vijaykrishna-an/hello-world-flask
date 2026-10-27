@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello-world-flask
+  labels:
+    app: hello-world-flask
+spec:
+  replicas: 2
+  # Rolling update: bring up a new pod before taking an old one down, so there's no downtime.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: hello-world-flask
+  template:
+    metadata:
+      labels:
+        app: hello-world-flask
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      # No imagePullSecrets needed — Docker Hub public images are pulled without auth.
+      # If you ever switch to a private registry, add an imagePullSecrets block here.
+      containers:
+        - name: app
+          # The real name/tag is set by k8s/kustomization.yaml (the "images:" block).
+          # Local dev:  hello-world-flask:local-vN  (loaded via minikube image load)
+          # CI/CD:      anvk1729/hello-world-flask:<git-sha>  (pulled from Docker Hub)
+          image: hello-world-flask
+          # Always: re-pull from Docker Hub on every pod start.
+          # Safe to use with SHA tags (immutable) — guarantees exact image runs.
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+          # Readiness: only send traffic to the pod once this succeeds.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          # Liveness: restart the container if this keeps failing.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false

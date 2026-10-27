@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: hello-world-flask
+  labels:
+    app: hello-world-flask
+spec:
+  type: ClusterIP
+  # Routes to every pod carrying this label (the Deployment's pods).
+  selector:
+    app: hello-world-flask
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
