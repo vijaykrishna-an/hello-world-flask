@@ -99,11 +99,11 @@ jobs:
 
       # Authenticate to Docker Hub.
       # Secrets required (add in: repo → Settings → Secrets → Actions):
-      #   DOCKERHUB_TOKEN — access token generated at hub.docker.com
+      #   DOCKERHUB_SECRET — access token generated at hub.docker.com
       #                     (Account Settings → Personal Access Tokens → Read & Write)
       - name: Login to Docker Hub
         run: |
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | \
+          echo "${{ secrets.DOCKERHUB_SECRET }}" | \
             docker login -u ${{ env.DOCKERHUB_USERNAME }} --password-stdin
 
       # Push both the SHA tag and "latest".
