@@ -5,17 +5,17 @@ name: CI / CD — Build, Push, Deploy
 #
 #  git push → main
 #      │
-#      ├── job: test          (every push + PR)
-#      │     └── docker build --target test   ← pytest runs inside Docker
+#      ├── job: test            (every push + every PR)
+#      │     └── docker build --target test   ← pytest runs INSIDE Docker
 #      │
 #      ├── job: build-and-push  (main only, after test passes)
 #      │     ├── docker build --target runtime --build-arg APP_VERSION=<sha>
 #      │     ├── docker login  → Docker Hub (anvk1729)
-#      │     └── docker push  → anvk1729/hello-world-flask:<sha>
+#      │     └── docker push  → anvk1729/hello-world-flask:<sha>  + :latest
 #      │
 #      └── job: update-k8s-tag  (after push succeeds)
 #            ├── sed newTag: <sha>  in k8s/kustomization.yaml
-#            └── git commit + push  ← ArgoCD detects this change
+#            └── git commit + push  ← ArgoCD detects this change and deploys
 #
 # ─────────────────────────────────────────────────────────────────────────────
 on:
@@ -23,9 +23,8 @@ on:
     branches: [main]
     paths-ignore:
       # The update-k8s-tag job commits to k8s/. Without this guard the commit
-      # would re-trigger the workflow → infinite loop.
-      # (Pushes made with GITHUB_TOKEN also don't re-trigger, so this is a
-      #  double safety net.)
+      # re-triggers the workflow → infinite loop.
+      # (GitHub also doesn't re-trigger on GITHUB_TOKEN pushes — double safety.)
       - "k8s/**"
   pull_request:
     branches: [main]
@@ -38,8 +37,8 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   # JOB 1 — test
   # Runs on every push and every PR.
-  # Builds only the "test" stage of the Dockerfile which ends with `RUN pytest`.
-  # If any test fails, docker build exits non-zero → job fails → pipeline stops.
+  # Builds only the "test" stage from the Dockerfile which ends with RUN pytest.
+  # If any test fails → docker build exits non-zero → job fails → pipeline stops.
   # ─────────────────────────────────────────────────────────────────────────
   test:
     name: Test 🧪
@@ -47,7 +46,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Run tests inside Docker
         run: |
@@ -59,8 +58,8 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────────
   # JOB 2 — build-and-push
-  # Runs only on pushes to main (never on PRs).
-  # Depends on test → only runs if tests passed.
+  # Runs ONLY on pushes to main (skipped for PRs).
+  # Depends on test — runs only if tests passed.
   # ─────────────────────────────────────────────────────────────────────────
   build-and-push:
     name: Build & Push 🐳
@@ -69,25 +68,24 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     outputs:
-      # Pass the tag to the next job so it knows what to write in kustomization.yaml
       image-tag: ${{ steps.tag.outputs.image-tag }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
-      # Use first 7 chars of the git commit SHA as the image tag.
-      # This is immutable, unique, and links the running image directly to a commit.
+      # Use first 7 chars of the git SHA as the image tag.
+      # Immutable, unique, and traces directly back to the exact commit.
       - name: Set image tag
         id: tag
         run: |
           SHORT_SHA="${GITHUB_SHA::7}"
           echo "image-tag=${SHORT_SHA}" >> $GITHUB_OUTPUT
-          echo "Image tag will be: ${SHORT_SHA}"
+          echo "Image tag: ${SHORT_SHA}"
 
-      # Build the slim production image. pytest is NOT re-run here (it ran in job 1).
-      # APP_VERSION is baked into the image and returned by the "/" endpoint,
-      # so you can verify exactly which commit is running after ArgoCD deploys it.
+      # Build the slim production image.
+      # APP_VERSION is baked in and returned by the Flask "/" endpoint —
+      # so after ArgoCD deploys you can curl "/" to confirm which commit is live.
       - name: Build runtime image
         run: |
           docker build \
@@ -97,43 +95,43 @@ jobs:
             -t ${{ env.IMAGE_NAME }}:latest \
             .
 
-      # Authenticate to Docker Hub.
-      # Secrets required (add in: repo → Settings → Secrets → Actions):
-      #   DOCKERHUB_SECRET — access token generated at hub.docker.com
-      #                     (Account Settings → Personal Access Tokens → Read & Write)
+      # DOCKERHUB_SECRET is set in:
+      #   repo → Settings → Secrets and variables → Actions → New repository secret
       - name: Login to Docker Hub
         run: |
           echo "${{ secrets.DOCKERHUB_SECRET }}" | \
             docker login -u ${{ env.DOCKERHUB_USERNAME }} --password-stdin
 
-      # Push both the SHA tag and "latest".
-      # ArgoCD pins to the SHA tag; "latest" is a convenience alias.
       - name: Push image to Docker Hub
         run: |
           docker push ${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.image-tag }}
           docker push ${{ env.IMAGE_NAME }}:latest
-          echo "### Image pushed ✅" >> $GITHUB_STEP_SUMMARY
-          echo "\`${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.image-tag }}\`" >> $GITHUB_STEP_SUMMARY
 
       - name: Logout from Docker Hub
         if: always()
         run: docker logout
 
+      - name: Summary
+        run: |
+          echo "### Image pushed ✅" >> $GITHUB_STEP_SUMMARY
+          echo "\`${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.image-tag }}\`" >> $GITHUB_STEP_SUMMARY
+
   # ─────────────────────────────────────────────────────────────────────────
   # JOB 3 — update-k8s-tag
-  # The GitOps hand-off point: CI edits ONE line in k8s/kustomization.yaml
-  # (the image tag) and commits it to the repo.
-  # ArgoCD polls the repo every ~3 min, detects the new tag, and runs
-  # kubectl apply -k k8s/ against the cluster — completing the deployment.
+  # GitOps hand-off: CI edits ONE line in k8s/kustomization.yaml (the image
+  # tag) and commits it. ArgoCD polls the repo, detects the change, and runs
+  # kubectl apply -k k8s/ — completing the deployment to minikube.
   # ─────────────────────────────────────────────────────────────────────────
   update-k8s-tag:
     name: Update Image Tag in Git 📝
     runs-on: [self-hosted, mac, arm64]
     needs: [build-and-push]
+    permissions:
+      contents: write   # required to push the tag commit back to the repo
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -141,7 +139,6 @@ jobs:
         run: |
           IMAGE_TAG="${{ needs.build-and-push.outputs.image-tag }}"
 
-          # Update the newName and newTag lines inside the images block.
           sed -i '' "s|newName:.*|newName: ${{ env.IMAGE_NAME }}|" k8s/kustomization.yaml
           sed -i '' "s|newTag:.*|newTag: ${IMAGE_TAG}|"             k8s/kustomization.yaml
 
