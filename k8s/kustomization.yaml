@@ -11,16 +11,16 @@ resources:
 # The single place that decides WHICH image runs in the cluster.
 # ──────────────────────────────────────────────────────────────
 # For local dev:
-#   newName: hello-world-flask          (image loaded via `minikube image load`)
-#   newTag:  local-vN
+#   newName: anvk1729/hello-world-flask
+#   newTag: 659f9d0
 #
 # After CI runs (CI edits these two lines automatically):
 #   newName: anvk1729/hello-world-flask
-#   newTag:  <git-sha>   (e.g. a3f9c1)
+#   newTag: 659f9d0
 #
 # ArgoCD watches this file. When CI commits a new tag here,
 # ArgoCD detects the drift and applies the change to the cluster.
 images:
   - name: hello-world-flask
     newName: anvk1729/hello-world-flask
-    newTag: local-v2
+    newTag: 659f9d0
