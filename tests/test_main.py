@@ -14,7 +14,7 @@ def test_hello(client):
     resp = client.get("/")
     assert resp.status_code == 200
     body = resp.get_json()
-    assert body["message"] == "Hello, World from Flask on Kubernetes!"
+    assert body["message"] == "Hello from Flask — running through the full CI/CD pipeline!"
     assert "version" in body
     assert "pod" in body
 
