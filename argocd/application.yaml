@@ -1,0 +1,46 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hello-world-flask
+  namespace: argocd   # ArgoCD always reads Application objects from its own namespace
+  # Finalizer: when you delete this Application object, ArgoCD also deletes
+  # all the k8s resources it created (pods, service, etc). Remove it if you
+  # want to delete the Application object without touching the cluster resources.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  # "default" project allows deploying to any cluster/namespace.
+  # In production you would create a restricted project.
+  project: default
+
+  # ── Source ────────────────────────────────────────────────────────────────
+  # WHERE ArgoCD reads the desired state from.
+  # This is the GitHub repo CI writes to. Public repo = no credentials needed.
+  source:
+    repoURL: https://github.com/vijaykrishna-an/hello-world-flask.git
+    targetRevision: main       # watch the main branch
+    path: k8s                  # the kustomization.yaml lives here
+    # ArgoCD auto-detects kustomize when kustomization.yaml is present in path.
+
+  # ── Destination ───────────────────────────────────────────────────────────
+  # WHERE ArgoCD applies the manifests.
+  # https://kubernetes.default.svc = the same cluster ArgoCD runs in (minikube).
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: hello-world     # must match kustomization.yaml namespace
+
+  # ── Sync Policy ───────────────────────────────────────────────────────────
+  syncPolicy:
+    automated:
+      # prune: delete cluster resources that are removed from Git.
+      # Without this, deleted manifests leave orphaned resources in the cluster.
+      prune: true
+      # selfHeal: if someone manually edits the cluster (kubectl edit, etc),
+      # ArgoCD reverts it back to match Git within ~3 minutes.
+      # This enforces Git as the single source of truth.
+      selfHeal: true
+    syncOptions:
+      # Create the namespace if it doesn't exist yet (handles fresh clusters).
+      - CreateNamespace=true
+      # Apply server-side to handle large CRDs and avoid annotation size limits.
+      - ServerSideApply=false
