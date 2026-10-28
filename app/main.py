@@ -15,9 +15,9 @@ APP_VERSION = os.environ.get("APP_VERSION", "dev")
 @app.route("/")
 def hello():
     return jsonify(
-        message="Hello, World from Flask on Kubernetes!",
+        message="Hello from Flask — running through the full CI/CD pipeline!",
         version=APP_VERSION,
-        # Inside a pod the hostname is the pod name, which shows load-balancing across replicas.
+        # Inside a pod the hostname is the pod name, which shows load-balancing.
         pod=socket.gethostname(),
     )
 
