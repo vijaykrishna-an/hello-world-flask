@@ -12,15 +12,15 @@ resources:
 # ──────────────────────────────────────────────────────────────
 # For local dev:
 #   newName: anvk1729/hello-world-flask
-#   newTag: 659f9d0
+#   newTag: ed7dd81
 #
 # After CI runs (CI edits these two lines automatically):
 #   newName: anvk1729/hello-world-flask
-#   newTag: 659f9d0
+#   newTag: ed7dd81
 #
 # ArgoCD watches this file. When CI commits a new tag here,
 # ArgoCD detects the drift and applies the change to the cluster.
 images:
   - name: hello-world-flask
     newName: anvk1729/hello-world-flask
-    newTag: 659f9d0
+    newTag: ed7dd81
